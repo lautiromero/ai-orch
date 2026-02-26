@@ -1,0 +1,44 @@
+{
+  "name": "ai-orch",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "build": "bun build ./src/index.ts ./config/models.config.ts --env-file=.env --compile --outfile dist/ai-orch --target=bun",
+    "build:js": "bun build ./src/index.ts ./config/models.config.ts --outdir ./dist/js/"
+  },
+  "dependencies": {
+    "@google/genai": "^1.42.0",
+    "@inquirer/core": "^11.1.5",
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^25.3.0",
+    "@types/react": "^19.2.14",
+    "axios": "^1.13.5",
+    "chalk": "^5.6.2",
+    "cheerio": "^1.2.0",
+    "cli-highlight": "^2.1.11",
+    "clipboardy": "^5.3.0",
+    "dotenv": "^17.3.1",
+    "enquirer": "^2.4.1",
+    "highlight": "^0.2.4",
+    "ink": "^6.8.0",
+    "ink-text-input": "^6.0.0",
+    "markdansi": "^0.2.1",
+    "marked": "^17.0.3",
+    "marked-terminal": "^7.3.0",
+    "ora": "^9.3.0",
+    "prettier": "^3.8.1",
+    "react": "^19.2.4",
+    "react-devtools-core": "^7.0.1",
+    "string-width": "^8.2.0",
+    "ts-node": "^10.9.2",
+    "wrap-ansi": "^10.0.0"
+  }
+}

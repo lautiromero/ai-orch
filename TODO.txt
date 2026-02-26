@@ -1,0 +1,8 @@
+manejar el tema de los copy para o que sea mas facil de manejar (ej que diga cuantos codes hay)
+cargar historial de la session
+poner alias a los modelos o empieza con ej /use qwen, gemini, gemini2.5
+ver si se puede usar ink para solucionar la visibilidad de los codeblocks
+rellenar el autocomplete incluso cuando el user rellena la palabra hasta la carpeta antes de /. Ej src/config aqui se detienen las sugerencias hasta presionar /
+solucionar shift + / para no escribe ?
+
+implementar search feature
