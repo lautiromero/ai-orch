@@ -20,7 +20,9 @@
     "@types/marked-terminal": "^6.1.1",
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.14",
-    "axios": "^1.13.5",
+    "add": "^2.0.6",
+    "ai": "^6.0.104",
+    "axios": "^1.13.6",
     "chalk": "^5.6.2",
     "cheerio": "^1.2.0",
     "cli-highlight": "^2.1.11",
@@ -33,12 +35,17 @@
     "markdansi": "^0.2.1",
     "marked": "^17.0.3",
     "marked-terminal": "^7.3.0",
+    "node-html-markdown": "^2.0.0",
+    "ollama": "^0.6.3",
+    "ollama-ai-provider-v2": "^3.3.1",
     "ora": "^9.3.0",
+    "playwright": "^1.58.2",
     "prettier": "^3.8.1",
     "react": "^19.2.4",
     "react-devtools-core": "^7.0.1",
     "string-width": "^8.2.0",
     "ts-node": "^10.9.2",
-    "wrap-ansi": "^10.0.0"
+    "wrap-ansi": "^10.0.0",
+    "zod": "^4.3.6"
   }
 }

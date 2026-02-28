@@ -15,11 +15,16 @@ export class CommandService {
   constructor(
     private sessionManager: SessionManager,
     private printer: PrinterService,
-    private orchestrator: Orchestrator
+    private orchestrator: Orchestrator,
+    private sourceService: SourceService
   ) {
     this.promptEngine = new PromptEngine();
     this.shouldContinue = true;
     this.updatedHistory = [];
+
+    this.sourceService = new SourceService({
+      ollamaModel: 'phi4-mini:3.8b'
+    });
   }
 
   /**
@@ -170,9 +175,19 @@ export class CommandService {
           break;
         }
 
-        // 1. Búsqueda (llamada al futuro SearchService)
-        const sourceService = new SourceService(library, resource, askPart, history);
-        await sourceService.injectSource();
+        try {
+          const result = await this.sourceService.processUserMessage(askPart, history);
+
+          if (result.action === 'inject_context') {
+            console.log('\n📦 CONTEXTO A INYECTAR:');
+            console.log(this.sourceService.formatForModel(result.contextToInject));
+          } else {
+            console.log('Resultado:', result);
+          }
+        } catch (error) {
+          console.error('Error:', error);
+        }
+
 
         // // 2. Modo solo-search
         // if (askPart === undefined) {
