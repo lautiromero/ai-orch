@@ -54,7 +54,7 @@ const ChatPromptComponent = ({
   useInput((char, key) => {
     // console.log(`key: ${JSON.stringify(key)}, char: ${char}`);
 
-    if (key.ctrl && char === 'c') process.exit(0);
+    if ((key.ctrl && char === 'c') && !key.shift) process.exit(0);
 
     if (key.return && !key.shift && char !== '\u001b[13;2u') {
       if (Date.now() - mountedAt.current < 250) return;

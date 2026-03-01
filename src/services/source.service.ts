@@ -1,771 +1,458 @@
 import axios from 'axios';
-import { firefox } from 'playwright';
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { generateText, Output } from 'ai';
-import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { z } from 'zod';
-import type { Message } from '../providers/base.provider';
-
-interface SourceOptions {
-  llmModel?: string;
-  detectorModel?: string;
-  timeout?: number;
-  maxContentLength?: number;
-}
-
-type ExtractionMethods = 'jina-ai' | 'failed' | 'semantic' | 'heuristic:density' | 'fallback:body' | 'platform';
-
-interface ExtractOptions {
-  strategy: 'auto' | 'fast' | 'medium' | 'thorough';
-  maxConcurrent?: number;
-}
-
-interface SmartExtractResult {
-  url: string;
-  query: string;
-  extractionMethod: ExtractionMethods;
-  rawLength?: number;
-  cleanedContent: {
-    summary: string;
-    technicalDetails: string;
-    usageExample: string;
-    importantNotes: string
-  } | null;
-  success: boolean;
-  processingSteps?: {
-    step: 'extraction' | 'cleaning';
-    method: string;
-    success: boolean;
-  }[];
-}
-
-interface GoogleResult {
-  title: string,
-  url: string,
-  snippet: string,
-  source: 'google-serper'
-}
-
-interface ExtractDynamicResult {
-  content: string,
-  source: 'playwright',
-  method: ExtractionMethods,
-  success: boolean,
-  metadata?: {
-    textLength: number;
-    extractionMethod: ExtractionMethods;
-  }
-  error?: string;
-}
-
-interface InjectionPackage {
-  timestamp: string;
-  originalQuery: string;
-  sources: string[];
-  context: string,
-  metadata: {
-    tokensEstimate: number;
-    extractionMethod: ExtractionMethods
-  }
-}
-
-type ProcessResult =
-  | {
-    action: 'inject_context';
-    contextToInject: InjectionPackage;
-    rawResults?: any;
-    reasoning?: string;
-  }
-  | {
-    action: 'extraction_failed' | 'search_failed' | 'direct';
-    contextToInject: null;
-    rawResults?: any;
-    reasoning?: string;
-  };
+import type {
+  SourceOptions, GoogleResult, ProcessResult,
+  Message
+} from '../types/source.types';
 
 export class SourceService {
   llmModel: string;
-  detectorModel: string;
   timeout: number;
   maxContentLength: number;
   private llmProvider: OpenAIProvider;
 
   constructor(options?: SourceOptions) {
     const host = process.env.LLM_HOST;
-    if (!host) {
-      throw new Error('LLM_HOST is not defined in environment variables.');
-    }
+    if (!host) throw new Error('LLM_HOST is not defined');
 
     this.llmModel = options?.llmModel || 'phi4-mini:3.8b';
-    this.detectorModel = this.llmModel || 'phi4-mini:3.8b';
-    this.timeout = options?.timeout || 10000;
-    this.maxContentLength = options?.maxContentLength || 15000;
+    this.timeout = options?.timeout || 12000;
+    this.maxContentLength = options?.maxContentLength || 12000;
 
     this.llmProvider = createOpenAI({
-      baseURL: host, // Ejemplo: http://localhost:8080/v1
-      apiKey: 'local-token', // El SDK lo requiere aunque el servidor no lo use
+      baseURL: host,
+      apiKey: 'local-token',
     });
   }
 
-  // ============================================================================
-  // NIVEL 1: EXTRACCIÓN UNIVERSAL RÁPIDA
-  // ============================================================================
-
   /**
-   * Usa servicios de "Reader Mode" (Jina AI) para extraer contenido limpio
-   * Gratis, rápido, sin configuración
+   * Extrae contenido usando Jina AI (Reader Mode)
    */
   async extractWithReader(url: string) {
-    const services = [
-      `https://r.jina.ai/http://${url}`,
-      `https://r.jina.ai/http://${url}?format=text`,
-      `https://r.jina.ai/http://${url}?format=json`
-    ];
-
-    for (const service of services) {
-      try {
-        const response = await axios.get(service, {
-          timeout: this.timeout,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; SmartBot/1.0)'
-          }
-        });
-
-        if (response.status === 200 && response.data.length > 500) {
-          return {
-            content: response.data,
-            source: 'jina-ai',
-            success: true
-          };
-        }
-      } catch (error: any) {
-        console.log(`Falló ${service}: ${error.message}`);
-        continue;
-      }
-    }
-
-    return { content: null, source: null, success: false };
-  }
-
-  /**
-   * Alternativa: Firecrawl API (requiere API key, más robusto)
-   */
-  async extractWithFirecrawl(url: string, apiKey: string) {
+    const jinaApiKey = process.env.JINA_API_KEY;
+    if (!jinaApiKey) throw Error('Jina API key needed.');
     try {
-      const response = await axios.post('https://api.firecrawl.dev/v1/scrape', {
-        url: url,
-        formats: ['markdown', 'html'],
-        onlyMainContent: true
-      }, {
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        timeout: this.timeout
+      const response = await axios.get(`https://r.jina.ai/${url}`, {
+        headers: {
+          // 'Authorization': `Bearer ${jinaApiKey}`,
+          // Remover elementos que no aportan valor
+          'X-Remove-Selector': [
+            'header', 'nav', '.nav', '.navbar', '.navigation',
+            'footer', '.footer',
+            '.sidebar', '.side-bar', '#sidebar',
+            '.menu', '.dropdown-menu',
+            'aside', '.aside',
+            '.ads', '.advertisement', '.banner',
+            '.cookie-banner', '.consent-banner',
+            '.social-share', '.share-buttons',
+            'script', 'style', 'noscript',
+            '.modal', '.s-modal', '.popup', '.overlay',
+            '.hidden', '.d-none', '.invisible',
+            '[aria-hidden="true"]',
+            '.comments', '#comments',
+            '.related-articles', '.recommended',
+            '.toc', '.table-of-contents', '#toc',
+            '.breadcrumbs', '.breadcrumb'
+          ].join(', '),
+          // Solo imágenes relevantes (ninguna por ahora)
+          'X-Retain-Images': 'none',
+          // Target: contenido principal (muy inclusivo)
+          'X-Target-Selector': [
+            'main', '#main', '.main', '[role="main"]',
+            'article', '.article', '.post', '.entry',
+            '.content', '#content', '.main-content', '#main-content',
+            '.documentation', '.docs', '#docs', '.doc-content',
+            '.page-content', '.article-content', '.post-content',
+            '.markdown-body', '.prose',
+            'section[role="region"]',
+            // Fallbacks comunes
+            '.container', '.wrapper', '.page-wrapper'
+          ].join(', '),
+          // Sin links summary para reducir ruido
+          'X-With-Links-Summary': 'none',
+          // Timeout para no esperar forever
+        },
+        timeout: 60000
       });
 
+      if (response.status !== 200) console.error(response)
       return {
-        content: response.data.data?.markdown || response.data.data?.html,
-        source: 'firecrawl',
-        success: true
+        content: response.data,
+        success: response.status === 200 && response.data.length > 600
       };
     } catch (error: any) {
-      return { content: null, source: null, success: false, error: error.message };
+      console.error(error.message);
+      return { content: null, success: false };
     }
   }
 
-  // ============================================================================
-  // NIVEL 2: EXTRACCIÓN DINÁMICA CON PLAYWRIGHT
-  // ============================================================================
-
   /**
-   * Para SPAs y contenido JavaScript-renderizado
-   * Usa heurísticas de densidad de texto para encontrar contenido principal
+   * Ordena los resultados de búsqueda por relevancia técnica y calidad
    */
-  async extractDynamicContent(url: string): Promise<ExtractDynamicResult> {
-    let browser;
-    try {
-      browser = await firefox.launch({ headless: true });
-      const page = await browser.newPage();
+  private rankResults(
+    results: GoogleResult[],
+    library?: string | null,
+    _suggestedSources?: string[]  // nuevo parámetro
+  ): GoogleResult[] {
+    return results.sort((a, b) => {
+      const getScore = (res: GoogleResult) => {
+        let score = 0;
+        const url = res.url.toLowerCase();
 
-      await page.goto(url, {
-        waitUntil: 'networkidle',
-        timeout: this.timeout
-      });
+        // Prioridad 1: Dominios sugeridos por el LLM
+        // if (suggestedSources?.some(s => url.includes(this.extractDomain(s).toLowerCase()))) {
+        //   score += 15;
+        // }
 
-      // Heurísticas inteligentes de selección de contenido
-      const content = await page.evaluate((): {
-        html: string,
-        method: ExtractionMethods,
-        textLength: number
-      } => {
-        // 1. Intentar selectores semánticos comunes
-        const semanticSelectors = [
-          'main',
-          'article',
-          '[role="main"]',
-          '.content',
-          '.documentation',
-          '.docs-content',
-          '.doc-content',
-          '#content',
-          '#main-content',
-          '.markdown-body', // GitHub
-          '.readme', // GitHub READMEs
-          '[itemprop="articleBody"]'
-        ];
+        // Prioridad 2: Documentación oficial de la librería
+        if (library && url.includes(library.toLowerCase())) score += 10;
+        if (
+          url.includes('docs.') ||
+          url.includes('/docs/') ||
+          url.includes('/guides/') ||
+          url.includes('.dev') ||
+          url.includes('dev.') ||
+          url.includes('/dev/')
+        ) score += 12;
 
-        for (const selector of semanticSelectors) {
-          const element = document.querySelector(selector) as HTMLElement;
-          if (element && element.innerText.length > 500) {
-            return {
-              html: element.innerHTML,
-              method: 'semantic',
-              textLength: element.innerText.length
-            };
-          }
-        }
+        // Prioridad 3: Repositorios y fuentes técnicas
+        // if (url.includes('github.com')) score += 5;
+        // if (url.includes('stackoverflow.com')) score += 2;
 
-        // 2. Detectar plataforma de documentación específica
-        const html = document.documentElement.innerHTML;
-        let platformSelector = null;
+        // Penalizar sitios no técnicos
+        if (url.includes('pinterest') || url.includes('facebook') || url.includes('youtube')) score -= 10;
 
-        if (html.includes('readthedocs')) {
-          platformSelector = '.rst-content, .document';
-        } else if (html.includes('docusaurus')) {
-          platformSelector = '.theme-doc-markdown, article';
-        } else if (html.includes('gitbook')) {
-          platformSelector = '[data-testid="page.content"]';
-        } else if (html.includes('mkdocs')) {
-          platformSelector = '.md-content';
-        } else if (html.includes('vuepress')) {
-          platformSelector = '.theme-default-content';
-        }
-
-        if (platformSelector) {
-          const element = document.querySelector(platformSelector) as HTMLElement;
-          if (element && element.innerText.length > 500) {
-            return {
-              html: element.innerHTML,
-              method: 'platform',
-              textLength: element.innerText.length
-            };
-          }
-        }
-
-        // 3. Fallback: Densidad de texto
-        const divs = Array.from(document.querySelectorAll('div'));
-        let bestDiv = null as any as HTMLElement;
-        let maxDensity = 0;
-
-        divs.forEach(div => {
-          const text = div.innerText || '';
-          const links = div.querySelectorAll('a').length;
-          const paragraphs = div.querySelectorAll('p').length;
-          const codeBlocks = div.querySelectorAll('code, pre').length;
-
-          // Fórmula de densidad: premia texto, párrafos y código; penaliza muchos links
-          const density = (text.length + (paragraphs * 100) + (codeBlocks * 50)) / (links + 1);
-
-          if (density > maxDensity && text.length > 1000) {
-            maxDensity = density;
-            bestDiv = div;
-          }
-        });
-
-        if (bestDiv) {
-          return {
-            html: bestDiv.innerHTML,
-            method: 'heuristic:density',
-            textLength: bestDiv.innerText.length
-          };
-        }
-
-        // Último recurso: body completo
-        return {
-          html: document.body.innerHTML,
-          method: 'fallback:body',
-          textLength: document.body.innerText.length
-        };
-      });
-
-      // Convertir HTML a Markdown
-      const markdown = NodeHtmlMarkdown.translate(content.html);
-
-      return {
-        content: markdown,
-        source: 'playwright',
-        method: content.method,
-        success: true,
-        metadata: {
-          textLength: content.textLength,
-          extractionMethod: content.method
-        }
+        return score;
       };
-
-    } catch (error: any) {
-      return {
-        content: '',
-        source: 'playwright',
-        success: false,
-        method: 'failed',
-        error: error.message
-      };
-    } finally {
-      if (browser) await browser.close();
-    }
+      return getScore(b) - getScore(a);
+    });
   }
 
-  // ============================================================================
-  // NIVEL 3: LIMPIEZA SEMÁNTICA CON LLM LOCAL (OLLAMA)
-  // ============================================================================
-
   /**
-   * Usa LLM local para extraer solo lo relevante para la query específica
-   * Elimina navegación, ads, y estructura el contenido técnico
+   * Genera un plan de búsqueda optimizado considerando la librería
    */
-  async semanticCleaner(rawContent: string, userQuery: string) {
-    const truncated = rawContent.slice(0, this.maxContentLength);
+  async optimizeSearch(userMessage: string, history: Message[], library?: string | null) {
+    const systemPrompt = library
+      ? `You are a technical search optimizer. Your ONLY job is to improve search queries for finding documentation.
 
+CRITICAL RULES - FOLLOW EXACTLY:
+1. The user is working with LIBRARY: "${library}"
+2. The query MUST contain "${library}" verbatim
+3. suggested_sources MUST be URLs that contain "${library}" in the domain or path
+4. If you cannot find relevant sources with "${library}", return EMPTY array []
+5. NEVER suggest generic sources like w3schools, oracle java docs, or unrelated technologies
+6. ONLY suggest official docs, GitHub repos, or established documentation sites for ${library}
+
+BAD EXAMPLE (NEVER DO THIS):
+- Query: "how to read properties in Java" 
+- Sources: ["https://docs.oracle.com/javase/..."] 
+- Why wrong: No mention of "${library}"
+
+GOOD EXAMPLE:
+- Query: "${library} middleware setup authentication"
+- Sources: ["https://${library}.js.org/guide/middleware", "https://github.com/${library}/${library}/blob/master/docs"]
+
+RESPONSE FORMAT:
+{
+  "query": "string that includes ${library}",
+  "suggested_sources": ["url with ${library}", "another url with ${library}"] or []
+}`
+
+      : `You are a technical search optimizer.
+
+CRITICAL RULES:
+1. Analyze the user message and identify the SPECIFIC technology/library mentioned
+2. The query MUST include that technology name
+3. suggested_sources MUST be URLs containing that technology name
+4. NO generic programming tutorials
+5. NO unrelated technologies
+
+RESPONSE FORMAT:
+{
+  "query": "improved search with technology name",
+  "suggested_sources": ["official docs url", "github url"] or []
+}`;
+
+    const userPrompt = library
+      ? `CONTEXT:
+- User is specifically using: ${library}
+- Previous messages: ${JSON.stringify(history.slice(-3))}
+- Current question: "${userMessage}"
+
+TASK: Create a search query and sources STRICTLY for ${library}.
+
+REMEMBER: 
+- Query MUST contain "${library}"
+- Sources MUST contain "${library}" in the URL
+- NO Java, no Spring, no unrelated tech unless explicitly mentioned by user`
+
+      : `CONTEXT:
+- Previous messages: ${JSON.stringify(history.slice(-3))}
+- Current question: "${userMessage}"
+
+TASK: Identify the technology in the message and create targeted search query and sources.`;
     try {
       const { output } = await generateText({
         model: this.llmProvider(this.llmModel),
-
-        // El esquema de Zod ahora va dentro de Output.object
+        temperature: 0,
         output: Output.object({
           schema: z.object({
-            summary: z.string().describe('2-3 lines of what it is and what it is for.'),
-            technicalDetails: z.string().describe('Signatures, parameters, and types.'),
-            usageExample: z.string().describe('Complete and functional code block.'),
-            importantNotes: z.string().describe('Warnings, deprecations, or requirements.')
-          }),
+            query: z.string(),
+            suggested_sources: z.array(z.string()).nullable().optional(),
+            sources: z.array(z.string()).nullable().optional(),
+          }).transform((data) => ({
+            query: data.query,
+            suggestedSources: data.suggested_sources ?? data.sources ?? [],
+          })),
         }),
-
-        system: `You are a precise technical information extractor.
-Your task:
-1. Identify relevant parts of the content to answer the user's question.
-2. Extract ONLY: function/API definitions, parameters, return types, code examples, warnings, and breaking changes.
-3. COMPLETELY remove: navigation, ads, headers, footers, and unrelated clutter.
-4. Keep code exact and functional.
-Respond ONLY with the structured data.`,
-
-        prompt: `USER QUERY: "${userQuery}"\n\nRAW WEB CONTENT:\n${truncated}`,
-
-        abortSignal: AbortSignal.timeout(this.timeout),
+        system: systemPrompt,
+        prompt: userPrompt,
       });
-
-      // Con la nueva sintaxis, los datos están en 'output'
-      return {
-        content: output,
-        success: true,
-        model: this.llmModel
-      };
-    } catch (error: any) {
-      //TODO: debug here
-      let message = '';
-      if (error.responseBody?.includes('model')) message = 'Model error.';
-      console.error(message || error);
-      return {
-        content: null,
-        success: false,
-        error: error.message
-      };
+      return output;
+    } catch (error) {
+      console.error(error);
+      return { query: userMessage, suggestedSources: library ? [library] : [] };
     }
   }
 
-
   /**
-   * Compresión agresiva para modelos con límite de contexto corto
-   * Resume la documentación en el formato más denso posible
+   * Synthesize the content obtained from the web and convert to markdown
    */
-  async compressForContext(rawContent: string, _userQuery: string, maxTokens = 800) {
-    const truncated = rawContent.slice(0, this.maxContentLength);
+  private async synthesizeContent(
+    userMessage: string,
+    finalContent: string,
+    history: Message[],
+    library?: string | null
+  ): Promise<string> {
 
-    try {
-      const { text } = await generateText({
-        model: this.llmProvider(this.llmModel),
+    // console.log('=== CONTENT PREVIEW (first 500 chars) ===');
+    // console.log(finalContent.slice(0, 500));
+    // console.log('=== END PREVIEW ===');
+    // console.log(`Total length: ${finalContent.length} chars`);
 
-        system: `You are a technical document compressor. 
-Your goal is maximum information density with minimum tokens.
-Rules:
-1. Keep exact function signatures (parameters and types).
-2. Provide 1-2 ultra-concise but functional code examples.
-3. Include only critical warnings (breaking changes, deprecations).
-4. Format: Dense bullet points, use inline code blocks for brevity.
-5. All output must be optimized for another LLM's context.`,
+    const result = await generateText({
+      model: this.llmProvider(this.llmModel),
+      temperature: 0.3,
+      system: `You are a technical assistant. Explain the user's query using the provided documentation.
+Be concise but complete. Include relevant API details and short code examples if present.
+Respond in clean Markdown.`,
+      prompt: `User Query: ${userMessage}
 
-        prompt: `CONTENT TO COMPRESS:
-${truncated}
+Conversation History:
+${history.slice(-3).map(h => `${h.role}: ${h.content}`).join('\n')}
 
-TARGET LIMIT: ${maxTokens} tokens.
-OUTPUT: Essential technical info only.`,
+Documentation Content:
+${finalContent.slice(0, this.maxContentLength)}
 
-        // Configuraciones de rendimiento para tu AMD
-        abortSignal: AbortSignal.timeout(this.timeout),
-        maxOutputTokens: maxTokens, // Límite estricto de salida
-        temperature: 0.1,     // Determinismo total
-      });
+Provide a helpful technical explanation:`,
+    });
 
-      return {
-        content: text,
-        tokens: maxTokens,
-        success: true
-      };
-    } catch (error: any) {
-      return {
-        // Fallback: Si falla, devolvemos un recorte bruto
-        content: rawContent.slice(0, maxTokens * 4),
-        success: false,
-        error: error.message
-      };
-    }
+    const rawOutput = (result as any)._output || result.text;
+
+    // Parsear si es JSON string
+    const text = this.extractTextFromLLMResponse(rawOutput);
+
+    return `### Documentation' Details\n\n${text}`;
   }
 
-  // ============================================================================
-  // FLUJO PRINCIPAL: ORQUESTACIÓN INTELIGENTE
-  // ============================================================================
-
   /**
-   * Pipeline completo: Intenta métodos en orden de velocidad/costo
+   * Proceso principal: Orquestación eficiente
    */
-  async smartExtract(url: string, userQuery: string, options: ExtractOptions): Promise<SmartExtractResult> {
-    const strategy = options.strategy || 'auto'; // 'fast', 'thorough', 'auto'
+  async processUserMessage(userMessage: string, history: Message[], libraryOverride?: string, _url?: string): Promise<ProcessResult> {
+    const library = libraryOverride || this.extractLibraryName(userMessage);
 
-    console.log(`🔍 Extrayendo: ${url}`);
-    console.log(`❓ Query: "${userQuery}"`);
-    console.log(`⚙️  Estrategia: ${strategy}`);
+    // console.log(`${library}, ${userMessage}`)
 
-    let rawContent = null;
-    let extractionMethod: ExtractionMethods = 'failed';
+    // 1. Optimizar búsqueda (LLM Local)
+    const plan = await this.optimizeSearch(userMessage, history, library);
+    // console.log(JSON.stringify(plan))
 
-    // PASO 1: Intento rápido con Jina AI (1-2 segundos, gratis)
-    if (strategy === 'medium' || strategy === 'auto') {
-      console.log('📡 Intentando Jina AI...');
-      const jinaResult = await this.extractWithReader(url);
+    if (!plan.query) console.info('Error getting query. Using orignal message');
 
-      if (jinaResult.success) {
-        rawContent = jinaResult.content;
-        extractionMethod = 'jina-ai';
-        console.log('✅ Jina AI exitoso');
-      } else {
-        console.log('❌ Jina AI falló');
+    // 2. Buscar en Google/Serper
+    const searchResults = await this.searchTechnical(plan.query || userMessage);
+    if (searchResults.length === 0) return { action: 'search_failed', contextToInject: null };
+
+    // 3. Ranking de calidad
+    const rankedResults = this.rankResults(searchResults, library, plan.suggestedSources);
+
+    // 4. Extracción Secuencial (Fallback)
+    // Solo scrapeamos el siguiente si el anterior falla o es muy corto
+    let finalContent = "";
+    let usedUrl = "";
+
+    for (const result of rankedResults.slice(0, 5)) { // 5 max
+      console.log(`Attempting extraction from: ${result.url}`);
+      const { content, success } = await this.extractWithReader(result.url);
+
+      // console.log(`${content}, succes: ${success}`)
+
+      if (success && content && this.isValidContent(content, plan.query)) {
+        finalContent = content;
+        usedUrl = result.url;
+        break;
       }
     }
 
-    // TODO: fallback travily 'fast'
+    if (!finalContent) return { action: 'extraction_failed', contextToInject: null };
 
-    // PASO 2: Fallback a Playwright para contenido dinámico (5-10 segundos)
-    if (!rawContent && (strategy === 'thorough')) {
-      console.log('🎭 Intentando Playwright...');
-      const pwResult = await this.extractDynamicContent(url);
+    // 5. Síntesis final (Una sola llamada al LLM para limpiar todo)
+    // const { text: synthesized } = await generateText({
+    //   model: this.llmProvider(this.llmModel),
+    //   system: `Extract only technical details, API signatures, and code examples from the provided text. 
+    //   Ignore navigation, headers, and footers. Respond in Markdown.`,
+    //   prompt: `User Query: ${userMessage}\n\nContent:\n${finalContent.slice(0, this.maxContentLength)}`,
+    // });
 
-      if (pwResult.success) {
-        rawContent = pwResult.content;
-        extractionMethod = pwResult.method!;
-        console.log(`✅ Playwright exitoso (${pwResult.metadata?.extractionMethod})`);
-      } else {
-        console.log('❌ Playwright falló:', pwResult.error);
-      }
-    }
+    console.info('Summarizing content...')
+    const synthesized = await this.synthesizeContent(userMessage, finalContent, history, library);
 
-    // console.log('rawcontent:', rawContent);
-    // PASO 3: Si no hay contenido, fallo
-    if (!rawContent) {
-      console.error(`No se pudo extraer contenido de ${url}`);
-    }
-
-    // PASO 4: Limpieza semántica con LLM local (2-4 segundos)
-    console.log('🧹 Limpiando con LLM local...');
-    const cleaned = await this.semanticCleaner(rawContent, userQuery);
-
-    if (!cleaned.success) {
-      console.warn('⚠️  Limpieza semántica falló, usando contenido raw truncado');
-    }
+    if (!synthesized) return { action: 'synthesized_failed', contextToInject: null };
 
     return {
-      url,
-      query: userQuery,
-      extractionMethod,
-      rawLength: rawContent.length,
-      cleanedContent: cleaned.content,
-      success: cleaned.success,
-      processingSteps: [
-        { step: 'extraction', method: extractionMethod, success: true },
-        { step: 'cleaning', method: 'ollama-semantic', success: cleaned.success }
-      ]
+      action: 'inject_context',
+      contextToInject: {
+        timestamp: new Date().toISOString(),
+        originalQuery: userMessage,
+        sources: [usedUrl],
+        context: synthesized,
+        metadata: {
+          tokensEstimate: Math.ceil(synthesized.length / 4),
+          extractionMethod: 'jina-ai'
+        }
+      }
     };
   }
 
-  /**
-   * Extracción paralela de múltiples URLs con ranking de relevancia
-   */
-  async extractMultiple(urls: string[], userQuery: string, options: ExtractOptions) {
-    const maxConcurrent = options.maxConcurrent || 3;
+  private async searchTechnical(query: string): Promise<GoogleResult[]> {
+    const apiKey = process.env.SERPER_API_KEY;
+    if (!apiKey) return [];
 
-    console.log(`🔄 Extrayendo ${urls.length} URLs en paralelo (max ${maxConcurrent})...`);
-
-    // Procesar en lotes para no saturar
-    const results = [];
-    for (let i = 0; i < urls.length; i += maxConcurrent) {
-      const batch = urls.slice(i, i + maxConcurrent);
-      const batchPromises = batch.map(url =>
-        this.smartExtract(url, userQuery, options)
-          .catch(err => ({
-            url,
-            query: userQuery,
-            extractionMethod: 'failed',
-            success: false,
-            error: err.message,
-            cleanedContent: null
-          } as SmartExtractResult))
+    try {
+      const response = await axios.post(
+        'https://google.serper.dev/search',
+        {
+          q: query,
+          num: 10
+        },
+        { headers: { 'X-API-KEY': apiKey } }
       );
 
-      const batchResults = await Promise.all(batchPromises);
-      results.push(...batchResults);
-    }
-
-    // Filtrar exitosos y ordenar por longitud (heurística simple de relevancia)
-    const successful = results
-      .filter(r => r.success && r.cleanedContent)
-      .sort((a, b) => b.cleanedContent!.summary.length - a.cleanedContent!.summary.length);
-
-    return {
-      results: successful,
-      failed: results.filter(r => !r.success),
-      combined: successful.map(r =>
-        `## Fuente: ${r.url}\n\n${r.cleanedContent}`
-      ).join('\n\n---\n\n')
-    };
-  }
-
-
-  /**
-   * Analiza el mensaje del usuario y devuelve datos para la busqueda
-   */
-  async optimizeSearch(userMessage: string, history: Message[]) {
-    try {
-      const { output } = await generateText({
-        model: this.llmProvider(this.llmModel), // Recomiendo phi4-mini aquí
-        output: Output.object({
-          schema: z.object({
-            optimizedQueries: z.array(z.string()).min(1).describe('Refined search queries based on context.'),
-            suggestedSources: z.array(z.string()).describe('Target sites like docs, github, or specific domains.'),
-            estimatedTokensNeeded: z.number().describe('How many tokens of documentation are likely needed to answer this (e.g., 500, 1500, 3000).'),
-            priority: z.enum(['low', 'medium', 'high']).describe('Urgency of the external data.')
-          }),
-        }),
-        system: `You are a technical search strategist.
-      Analyze the chat history and the current message to create a search plan.
-      - Use history to specify versions, OS (Fedora), and specific tech stacks.
-      - Estimate 'estimatedTokensNeeded' based on the complexity: simple questions (~500), complex API implementations (~2000), or complete library overviews (>3000).`,
-
-        prompt: `CHAT HISTORY:
-${history.slice(-10).map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
-
-NEW MESSAGE: "${userMessage}"`,
-
-        temperature: 0.1,
-        abortSignal: AbortSignal.timeout(this.timeout),
-      });
-
-      return {
-        queries: output.optimizedQueries,
-        sources: output.suggestedSources,
-        estimatedTokens: output.estimatedTokensNeeded,
-        priority: output.priority,
-        success: true
-      };
-    } catch (error: any) {
-      return {
-        queries: [userMessage],
-        sources: ['docs'],
-        estimatedTokens: 1000,
-        priority: 'medium',
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // ============================================================================
-  // MOTOR DE BÚSQUEDA (Integración con APIs)
-  // ============================================================================
-
-  /**
-   * Búsqueda Google via Serper.dev (gratis hasta 2500 búsquedas)
-   */
-  async searchGoogle(query: string, options: {
-    numResults?: number,
-    type?: string;
-  } = {
-      numResults: 5,
-      type: 'search'
-    }): Promise<GoogleResult[]> {
-    const serperApiKey = process.env.SERPER_API_KEY;
-    if (!serperApiKey) throw Error('Serper API Key needed.');
-
-    try {
-      const response = await axios.post('https://google.serper.dev/search', {
-        q: query,
-        num: options.numResults,
-        type: options.type
-      }, {
-        headers: {
-          'X-API-KEY': serperApiKey,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      return response.data.organic.map((result: any) => ({
-        title: result.title,
-        url: result.link,
-        snippet: result.snippet,
+      return response.data.organic?.map((r: any) => ({
+        title: r.title,
+        url: r.link,
+        snippet: r.snippet,
         source: 'google-serper'
-      }));
-    } catch (error: any) {
-      console.error('Error en búsqueda:', error.message);
+      })) || [];
+    } catch (err: any) {
+      console.error('Search error:', err.message);
       return [];
     }
   }
 
-  /**
-   * Búsqueda especializada para código/docs
-   */
-  async searchTechnical(query: string, context: { library?: string, language?: string }) {
-    const queries = [];
-
-    // Enriquecer query según contexto
-    if (context.library) {
-      queries.push(`${context.library} ${query} documentation`);
-      queries.push(`${context.library} ${query} site:github.com`);
-    }
-    if (context.language) {
-      queries.push(`${query} in ${context.language} example`);
-    }
-
-    // Query base si no hay contexto
-    queries.push(query);
-
-    // Ejecutar búsqueda con la query más específica primero
-    for (const q of queries) {
-      const results = await this.searchGoogle(q, { numResults: 3 });
-      if (results.length > 0) return results;
-    }
-
-    return [];
+  private extractLibraryName(message: string): string | null {
+    const commonLibs = ['react', 'vue', 'nextjs', 'tailwind', 'prisma', 'fastapi', 'pandas', 'express'];
+    const lower = message.toLowerCase();
+    return commonLibs.find(lib => lower.includes(lib)) || null;
   }
 
-
-
-  /**
-   * Punto de entrada principal
-   * Recibe mensaje de usuario, decide si necesita búsqueda, ejecuta pipeline
-   */
-  async processUserMessage(userMessage: string, history: Message[], library?: string): Promise<ProcessResult> {
-    console.log('\n🚀 === ORQUESTADOR ===');
-    console.log(`👤 Usuario: "${userMessage}"`);
-
-    // STEP 1: Optimize search parameters
-    const optimizedParams = await this.optimizeSearch(userMessage, history);
-
-    // PASO 2: Buscar
-    console.log(`🔎 Buscando: "${optimizedParams.queries[0]}"`);
-
-    const selectedLibrary = library ? library : this.extractLibraryName(userMessage);
-
-    const searchResults = await this.searchTechnical(optimizedParams.queries[0] ?? userMessage, {
-      library: selectedLibrary ?? undefined
-    });
-    if (searchResults.length === 0) {
-      return {
-        action: 'search_failed',
-        contextToInject: null,
-        reasoning: 'No se encontraron resultados de búsqueda'
-      };
+  private extractDomain(url: string): string {
+    try {
+      const urlObj = new URL(url);
+      // Quitar www. si existe
+      return urlObj.hostname.replace(/^www\./, '');
+    } catch {
+      // Si no es URL válida, devolver como está (asumiendo que ya es dominio)
+      return url.replace(/^www\./, '');
     }
-
-    console.log(`📄 Encontrados ${searchResults.length} resultados`);
-
-    // PASO 3: Extraer contenido de top 3 resultados
-    const topUrls = searchResults.slice(0, 3).map(r => r.url);
-    const extractionResults = await this.extractMultiple(
-      topUrls,
-      userMessage,
-      { strategy: 'medium', maxConcurrent: 1 }
-    );
-
-    if (extractionResults.results.length) {
-      return {
-        action: 'extraction_failed',
-        contextToInject: null,
-        reasoning: 'Falló la extracción de todos los resultados'
-      };
-    }
-
-    // PASO 4: Comprimir si es necesario (para modelos con contexto corto)
-    let finalContext = extractionResults.combined;
-
-    if (optimizedParams.estimatedTokens < 1000) {
-      console.log('📦 Comprimiendo resultados...');
-      const compressed = await this.compressForContext(
-        finalContext,
-        userMessage,
-        optimizedParams.estimatedTokens
-      );
-      finalContext = compressed.content;
-    }
-
-    // PASO 5: Formatear para inyección
-    const injectionPackage = {
-      timestamp: new Date().toISOString(),
-      originalQuery: userMessage,
-      sources: extractionResults.results.map(r => r.url),
-      context: finalContext,
-      metadata: {
-        tokensEstimate: Math.ceil(finalContext.length / 4), // Aproximación
-        extractionMethod: extractionResults.results[0]?.extractionMethod || 'failed'
-      }
-    };
-
-    console.log('✅ Contexto listo para inyección');
-    console.log(`📊 Tokens estimados: ${injectionPackage.metadata.tokensEstimate}`);
-
-    return {
-      action: 'inject_context',
-      contextToInject: injectionPackage,
-      rawResults: extractionResults
-    };
   }
 
-  /**
-   * Helper: Intenta extraer nombre de librería del mensaje
-   */
-  extractLibraryName(message: string) {
-    const commonLibs = [
-      'react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt',
-      'pandas', 'numpy', 'tensorflow', 'pytorch', 'django', 'flask', 'fastapi',
-      'docker', 'kubernetes', 'terraform', 'ansible',
-      'express', 'fastify', 'nest', 'koa', 'puppeteer',
-      'langchain', 'llamaindex', 'openai', 'anthropic', 'playwright',
-      'postgres', 'mongodb', 'mysql', 'redis', 'elasticsearch'
+  private isValidContent(content: string, query: string): boolean {
+    const invalidPatterns = [
+      /403\s+forbidden/i,
+      /captcha/i,
+      /security\s+service/i,
+      /cloudflare/i,
+      /access\s+denied/i,
+      /please\s+ensure\s+you\s+are\s+authorized/i,
+      /verification/i,
+      /blocked/i,
     ];
 
-    const lowerMsg = message.toLowerCase();
-    return commonLibs.find(lib => lowerMsg.includes(lib)) || null;
+    if (invalidPatterns.some(p => p.test(content))) {
+      console.error('Invalid matches')
+      return false;
+    }
+
+    // 2. No contenido genérico de "no encontrado"
+    if (/does\s+not\s+contain\s+any\s+information/i.test(content)) {
+      console.error('jeje')
+      return false;
+    }
+
+    // 3. Debe tener palabras clave de la query
+    if (query) {
+      // Extraer palabras significativas (ignorar "how", "to", "the", etc.)
+      const stopWords = new Set(['how', 'to', 'the', 'a', 'an', 'in', 'on', 'at', 'for', 'with', 'using', 'from']);
+      const queryTerms = query.toLowerCase()
+        .split(/\W+/)
+        .filter(w => w.length > 2 && !stopWords.has(w));
+
+      const contentLower = content.toLowerCase();
+
+      // Debe coincidir al menos con 2 términos o el 50% de los términos
+      const matches = queryTerms.filter(term => contentLower.includes(term)).length;
+      const minMatches = Math.max(2, Math.ceil(queryTerms.length * 0.5));
+
+      if (matches < minMatches) {
+        console.log(`Content only matches ${matches}/${minMatches} query terms`);
+        return false;
+      }
+    }
+
+    return true;
   }
 
-  /**
-   * Formatea el contexto para enviar al modelo de IA
-   */
-  formatForModel(injectionPackage: InjectionPackage, _modelType = 'default') {
-    const header = `[CONTEXT INJECTED - ${injectionPackage.timestamp}]
-Fuentes: ${injectionPackage.sources.join(', ')}
-Query original: ${injectionPackage.originalQuery}
----`;
+  private extractTextFromLLMResponse(response: any): string {
+    console.log('type:', typeof response);
+    console.log(response);
+    // Si es string, verificar si es JSON
+    if (typeof response === 'string') {
+      try {
+        const parsed = JSON.parse(response);
+        // Es JSON, extraer recursivamente
+        return this.extractFromParsedObject(parsed);
+      } catch {
+        // No es JSON, devolver el string directo
+        return response;
+      }
+    }
 
-    // if (modelType === 'cheap') {
-    //   // Para modelos baratos, formato ultra-conciso
-    //   return `${header}\nRESUMEN TÉCNICO:\n${injectionPackage.context}\n---\n`;
-    // }
+    // Si es objeto, extraer directo
+    if (typeof response === 'object' && response !== null) {
+      return this.extractFromParsedObject(response);
+    }
 
-    // Para modelos potentes, más estructura
-    return `${header}\nDOCUMENTACIÓN RELEVANTE:\n${injectionPackage.context}\n\nINSTRUCCIÓN: Usa la información anterior para responder. Cita la fuente si es específica.`;
+    return String(response);
+  }
+
+  private extractFromParsedObject(obj: any): string {
+    const fields = ['response', 'text', 'content', 'answer', 'message', 'value', 'result'];
+
+    for (const field of fields) {
+      if (typeof obj[field] === 'string') {
+        return obj[field];
+      }
+    }
+
+    if (obj.choices?.[0]?.message?.content) {
+      return obj.choices[0].message.content;
+    }
+
+    // Si no encontramos campo conocido, devolver stringify formateado
+    return JSON.stringify(obj, null, 2);
   }
 }
+
