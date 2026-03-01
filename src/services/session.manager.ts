@@ -14,7 +14,7 @@ interface SessionData {
 
 export class SessionManager {
   private sessionsDir: string;
-  private maxContextMessages: number = 15; // Un poco más de margen para desarrollo
+  private maxContextMessages: number = 10;
   private SYSTEM_PROMPT: Message = { role: 'system', content: 'Sos un programador experto.' };
 
   constructor() {

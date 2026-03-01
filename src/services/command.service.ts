@@ -9,16 +9,14 @@ import { SourceService } from './source.service';
 
 export class CommandService {
   private promptEngine;
-  private updatedHistory: Message[];
+  private sourceService: SourceService
 
   constructor(
     private sessionManager: SessionManager,
     private printer: PrinterService,
     private orchestrator: Orchestrator,
-    private sourceService: SourceService
   ) {
     this.promptEngine = new PromptEngine();
-    this.updatedHistory = [];
 
     this.sourceService = new SourceService({
       llmModel: 'Qwen2.5.1-Coder-7B-Instruct',
@@ -34,6 +32,7 @@ export class CommandService {
   async execute(input: string, sessionId: string, history: any[]): Promise<{ shouldContinue: boolean, updatedHistory?: any[] }> {
     const trimmedInput = input.trim();
     let shouldContinue = false;
+    let updatedHistory = [];
 
     // Si no empieza con /, no es un comando para este service
     if (!trimmedInput.startsWith('/')) return { shouldContinue: false };
@@ -83,7 +82,7 @@ export class CommandService {
         this.printer.printInfo("⚠ Historial de conversación limpio.");
 
         shouldContinue = true;
-        this.updatedHistory = newHistory;
+        updatedHistory = newHistory;
         break;
 
       case '/help':
@@ -196,6 +195,10 @@ export class CommandService {
           if (result.action === 'inject_context') {
             console.log('\n📦 CONTEXTO A INYECTAR:');
             console.log(result.contextToInject.context);
+            shouldContinue = true;
+            updatedHistory = history.concat({
+              role: 'user', content: `Esta es informacion actualizada de internet. Tenla en cuenta en las siguientes respuestas: ${result.contextToInject.context}`
+            })
           } else {
             console.log('Error type:', result.action);
           }
@@ -214,10 +217,10 @@ export class CommandService {
     }
 
     // Always process the final input
-    const finalInput = await this.promptEngine.processInput(trimmedInput);
-    history.push({ role: 'user', content: finalInput });
+    // const finalInput = await this.promptEngine.processInput(trimmedInput);
+    // history.push({ role: 'user', content: finalInput });
     return {
-      updatedHistory: this.updatedHistory.length ? this.updatedHistory : undefined,
+      updatedHistory: updatedHistory.length ? updatedHistory : undefined,
       shouldContinue: shouldContinue
     }
   }

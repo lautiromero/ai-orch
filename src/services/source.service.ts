@@ -439,7 +439,7 @@ Provide a helpful technical explanation:`,
   }
 
   private extractFromParsedObject(obj: any): string {
-    const fields = ['response', 'text', 'content', 'answer', 'message', 'value', 'result'];
+    const fields = ['response', 'text', 'content', 'answer', 'message', 'value', 'result', 'thoughts'];
 
     for (const field of fields) {
       if (typeof obj[field] === 'string') {
