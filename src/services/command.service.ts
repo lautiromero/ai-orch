@@ -23,7 +23,8 @@ export class CommandService {
     this.updatedHistory = [];
 
     this.sourceService = new SourceService({
-      ollamaModel: 'phi4-mini:3.8b'
+      ollamaModel: 'phi4-mini:3.8b',
+      timeout: 60000
     });
   }
 

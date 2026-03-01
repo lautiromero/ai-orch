@@ -1,13 +1,13 @@
 import axios from 'axios';
 import { firefox } from 'playwright';
-import { createOllama, type OllamaProvider } from 'ollama-ai-provider-v2';
+import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai';
 import { generateText, Output } from 'ai';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
 import { z } from 'zod';
 import type { Message } from '../providers/base.provider';
 
 interface SourceOptions {
-  ollamaModel?: string;
+  llmModel?: string;
   detectorModel?: string;
   timeout?: number;
   maxContentLength?: number;
@@ -84,25 +84,26 @@ type ProcessResult =
   };
 
 export class SourceService {
-  ollamaModel: string;
+  llmModel: string;
   detectorModel: string;
   timeout: number;
   maxContentLength: number;
-  private ollamaProvider: OllamaProvider;
+  private llmProvider: OpenAIProvider;
 
   constructor(options?: SourceOptions) {
-    const host = process.env.OLLAMA_HOST;
+    const host = process.env.LLM_HOST;
     if (!host) {
-      throw new Error('OLLAMA_HOST is not defined in environment variables.');
+      throw new Error('LLM_HOST is not defined in environment variables.');
     }
 
-    this.ollamaModel = options?.ollamaModel || 'phi4-mini:3.8b';
-    this.detectorModel = options?.detectorModel || 'phi4-mini:3.8b';
+    this.llmModel = options?.llmModel || 'phi4-mini:3.8b';
+    this.detectorModel = this.llmModel || 'phi4-mini:3.8b';
     this.timeout = options?.timeout || 10000;
     this.maxContentLength = options?.maxContentLength || 15000;
 
-    this.ollamaProvider = createOllama({
-      baseURL: `${host}/api`,
+    this.llmProvider = createOpenAI({
+      baseURL: host, // Ejemplo: http://localhost:8080/v1
+      apiKey: 'local-token', // El SDK lo requiere aunque el servidor no lo use
     });
   }
 
@@ -325,12 +326,12 @@ export class SourceService {
 
     try {
       const { output } = await generateText({
-        model: this.ollamaProvider(this.ollamaModel),
+        model: this.llmProvider(this.llmModel),
 
         // El esquema de Zod ahora va dentro de Output.object
         output: Output.object({
           schema: z.object({
-            summary: z.string().describe('2-3 lines of what it is and what it is for. WRITE THE CONTENT IN SPANISH.'),
+            summary: z.string().describe('2-3 lines of what it is and what it is for.'),
             technicalDetails: z.string().describe('Signatures, parameters, and types.'),
             usageExample: z.string().describe('Complete and functional code block.'),
             importantNotes: z.string().describe('Warnings, deprecations, or requirements.')
@@ -354,11 +355,13 @@ Respond ONLY with the structured data.`,
       return {
         content: output,
         success: true,
-        model: this.ollamaModel
+        model: this.llmModel
       };
     } catch (error: any) {
       //TODO: debug here
-      console.error(error.message);
+      let message = '';
+      if (error.responseBody?.includes('model')) message = 'Model error.';
+      console.error(message || error);
       return {
         content: null,
         success: false,
@@ -377,7 +380,7 @@ Respond ONLY with the structured data.`,
 
     try {
       const { text } = await generateText({
-        model: this.ollamaProvider(this.ollamaModel),
+        model: this.llmProvider(this.llmModel),
 
         system: `You are a technical document compressor. 
 Your goal is maximum information density with minimum tokens.
@@ -539,7 +542,7 @@ OUTPUT: Essential technical info only.`,
   async optimizeSearch(userMessage: string, history: Message[]) {
     try {
       const { output } = await generateText({
-        model: this.ollamaProvider(this.ollamaModel), // Recomiendo phi4-mini aquí
+        model: this.llmProvider(this.llmModel), // Recomiendo phi4-mini aquí
         output: Output.object({
           schema: z.object({
             optimizedQueries: z.array(z.string()).min(1).describe('Refined search queries based on context.'),
@@ -655,7 +658,7 @@ NEW MESSAGE: "${userMessage}"`,
    * Punto de entrada principal
    * Recibe mensaje de usuario, decide si necesita búsqueda, ejecuta pipeline
    */
-  async processUserMessage(userMessage: string, history: Message[], library: string): Promise<ProcessResult> {
+  async processUserMessage(userMessage: string, history: Message[], library?: string): Promise<ProcessResult> {
     console.log('\n🚀 === ORQUESTADOR ===');
     console.log(`👤 Usuario: "${userMessage}"`);
 
@@ -685,7 +688,7 @@ NEW MESSAGE: "${userMessage}"`,
     const extractionResults = await this.extractMultiple(
       topUrls,
       userMessage,
-      { strategy: 'medium' }
+      { strategy: 'medium', maxConcurrent: 1 }
     );
 
     if (extractionResults.results.length) {
