@@ -234,7 +234,7 @@ TASK: Identify the technology in the message and create targeted search query an
 
     const result = await generateText({
       model: this.llmProvider(this.llmModel),
-      temperature: 0.3,
+      temperature: 0.1,
       system: `You are a technical assistant. Explain the user's query using the provided documentation.
 Be concise but complete. Include relevant API details and short code examples if present.
 Respond in clean Markdown.`,
@@ -258,58 +258,94 @@ Provide a helpful technical explanation:`,
   }
 
   /**
-   * Proceso principal: Orquestación eficiente
-   */
-  async processUserMessage(userMessage: string, history: Message[], libraryOverride?: string, _url?: string): Promise<ProcessResult> {
+ * Main orchestration.
+ * If a URL is supplied, it is used directly (no search/ranking).
+ * Otherwise the original search‑rank‑extract‑synthesize flow is executed.
+ */
+  async processUserMessage(
+    userMessage: string,
+    history: Message[],
+    libraryOverride?: string,
+    _url?: string
+  ): Promise<ProcessResult> {
     const library = libraryOverride || this.extractLibraryName(userMessage);
 
-    // console.log(`${library}, ${userMessage}`)
+    // -----------------------------------------------------------------
+    // 1️⃣  URL shortcut – use the provided URL directly
+    // -----------------------------------------------------------------
+    if (_url) {
+      const { content, success } = await this.extractWithReader(_url);
+      if (success && content && this.isValidContent(content, userMessage)) {
+        const synthesized = await this.synthesizeContent(
+          userMessage,
+          content,
+          history,
+          library
+        );
 
-    // 1. Optimizar búsqueda (LLM Local)
+        return {
+          action: 'inject_context',
+          contextToInject: {
+            timestamp: new Date().toISOString(),
+            originalQuery: userMessage,
+            sources: [_url],
+            context: synthesized,
+            metadata: {
+              tokensEstimate: Math.ceil(synthesized.length / 4),
+              extractionMethod: 'jina-ai (url‑override)'
+            }
+          }
+        };
+      }
+      return { action: 'extraction_failed', contextToInject: null };
+    }
+
+    // -----------------------------------------------------------------
+    // 2️⃣  Normal flow – optimise query, search, rank, extract, synthesize
+    // -----------------------------------------------------------------
     const plan = await this.optimizeSearch(userMessage, history, library);
-    // console.log(JSON.stringify(plan))
+    const query = plan.query || userMessage;
 
-    if (!plan.query) console.info('Error getting query. Using orignal message');
+    // Search
+    const searchResults = await this.searchTechnical(query);
+    if (searchResults.length === 0) {
+      return { action: 'search_failed', contextToInject: null };
+    }
 
-    // 2. Buscar en Google/Serper
-    const searchResults = await this.searchTechnical(plan.query || userMessage);
-    if (searchResults.length === 0) return { action: 'search_failed', contextToInject: null };
+    // Rank
+    const ranked = this.rankResults(
+      searchResults,
+      library,
+      plan.suggestedSources
+    );
 
-    // 3. Ranking de calidad
-    const rankedResults = this.rankResults(searchResults, library, plan.suggestedSources);
-
-    // 4. Extracción Secuencial (Fallback)
-    // Solo scrapeamos el siguiente si el anterior falla o es muy corto
-    let finalContent = "";
-    let usedUrl = "";
-
-    for (const result of rankedResults.slice(0, 5)) { // 5 max
-      console.log(`Attempting extraction from: ${result.url}`);
+    // Extract (try up to 5 best results)
+    let finalContent = '';
+    let usedUrl = '';
+    for (const result of ranked.slice(0, 5)) {
       const { content, success } = await this.extractWithReader(result.url);
-
-      // console.log(`${content}, succes: ${success}`)
-
-      if (success && content && this.isValidContent(content, plan.query)) {
+      if (success && content && this.isValidContent(content, query)) {
         finalContent = content;
         usedUrl = result.url;
         break;
       }
     }
 
-    if (!finalContent) return { action: 'extraction_failed', contextToInject: null };
+    if (!finalContent) {
+      return { action: 'extraction_failed', contextToInject: null };
+    }
 
-    // 5. Síntesis final (Una sola llamada al LLM para limpiar todo)
-    // const { text: synthesized } = await generateText({
-    //   model: this.llmProvider(this.llmModel),
-    //   system: `Extract only technical details, API signatures, and code examples from the provided text. 
-    //   Ignore navigation, headers, and footers. Respond in Markdown.`,
-    //   prompt: `User Query: ${userMessage}\n\nContent:\n${finalContent.slice(0, this.maxContentLength)}`,
-    // });
+    // Synthesize
+    const synthesized = await this.synthesizeContent(
+      userMessage,
+      finalContent,
+      history,
+      library
+    );
 
-    console.info('Summarizing content...')
-    const synthesized = await this.synthesizeContent(userMessage, finalContent, history, library);
-
-    if (!synthesized) return { action: 'synthesized_failed', contextToInject: null };
+    if (!synthesized) {
+      return { action: 'synthesized_failed', contextToInject: null };
+    }
 
     return {
       action: 'inject_context',

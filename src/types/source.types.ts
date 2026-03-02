@@ -1,4 +1,4 @@
-export type ExtractionMethods = 'jina-ai' | 'playwright' | 'failed' | 'semantic' | 'heuristic:density' | 'fallback:body' | 'platform';
+export type ExtractionMethods = 'jina-ai' | 'playwright' | 'failed' | 'platform' | 'jina-ai (url‑override)';
 
 export interface SourceOptions {
   llmModel?: string;
